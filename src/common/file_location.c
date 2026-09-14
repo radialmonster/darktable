@@ -249,43 +249,66 @@ gboolean dt_loc_init_user_cache_dir(const char *cachedir)
   return dt_check_opendir("darktable.cachedir", darktable.cachedir);
 }
 
-gboolean dt_loc_set_user_cache_dir(const char *cachedir)
+gchar *dt_loc_expand_user_path(const char *value)
 {
   // pasted values often carry surrounding spaces, or the quotes of a path
-  // copied from the Windows explorer
-  gchar *value = g_strstrip(g_strdup(cachedir ? cachedir : ""));
-  const size_t len = strlen(value);
-  if(len >= 2 && value[0] == '"' && value[len - 1] == '"')
+  // copied from File Explorer
+  gchar *text = g_strstrip(g_strdup(value ? value : ""));
+  const size_t len = strlen(text);
+  if(len >= 2 && text[0] == '"' && text[len - 1] == '"')
   {
-    memmove(value, value + 1, len - 2);
-    value[len - 2] = '\0';
+    memmove(text, text + 1, len - 2);
+    text[len - 2] = '\0';
+    g_strstrip(text);
   }
+#ifdef _WIN32
+  // dt_util_fix_path() only expands "~/"
+  if(text[0] == '~' && text[1] == '\\')
+    text[1] = '/';
+#endif
+  gchar *path = dt_util_fix_path(text);
+  g_free(text);
+  return path;
+}
 
-  gchar *path = dt_util_fix_path(value);
+dt_loc_cache_dir_check_t dt_loc_check_user_cache_dir(const char *cachedir)
+{
+  gchar *path = dt_loc_expand_user_path(cachedir);
+  dt_loc_cache_dir_check_t check = DT_LOC_CACHE_DIR_USABLE;
   if(!path || !g_path_is_absolute(path))
-  {
-    dt_print(DT_DEBUG_ALWAYS,
-             "[dt_loc_set_user_cache_dir] cache folder '%s' is not an absolute path",
-             value);
-    g_free(value);
-    g_free(path);
-    return FALSE;
-  }
-  g_free(value);
-
+    check = DT_LOC_CACHE_DIR_NOT_ABSOLUTE;
+#ifdef _WIN32
+  // GLib accepts "\folder" as absolute, but it depends on the current drive
+  else if(!(g_ascii_isalpha(path[0]) && path[1] == ':')
+          && !(G_IS_DIR_SEPARATOR(path[0]) && G_IS_DIR_SEPARATOR(path[1])))
+    check = DT_LOC_CACHE_DIR_NOT_ABSOLUTE;
+#endif
   // the folder must already exist: creating it while an external drive is
   // missing would silently put the cache on another drive that took the same
-  // letter, or inside an empty mount point. it also keeps
-  // dt_loc_init_generic() away from g_realpath(), which exits on non-Windows
-  // when the folder does not exist (grealpath.h)
-  if(!g_file_test(path, G_FILE_TEST_IS_DIR))
+  // letter, or inside an empty mount point
+  else if(!g_file_test(path, G_FILE_TEST_IS_DIR))
+    check = DT_LOC_CACHE_DIR_MISSING;
+  g_free(path);
+  return check;
+}
+
+gboolean dt_loc_set_user_cache_dir(const char *cachedir)
+{
+  const dt_loc_cache_dir_check_t check = dt_loc_check_user_cache_dir(cachedir);
+  if(check != DT_LOC_CACHE_DIR_USABLE)
   {
     dt_print(DT_DEBUG_ALWAYS,
-             "[dt_loc_set_user_cache_dir] cache folder '%s' does not exist", path);
-    g_free(path);
+             check == DT_LOC_CACHE_DIR_NOT_ABSOLUTE
+               ? "[dt_loc_set_user_cache_dir] cache folder '%s' is not an absolute path"
+               : "[dt_loc_set_user_cache_dir] cache folder '%s' does not exist",
+             cachedir ? cachedir : "");
     return FALSE;
   }
 
+  // the check above guarantees an existing folder, which keeps
+  // dt_loc_init_generic() away from g_realpath() exiting on non-Windows
+  // (grealpath.h)
+  gchar *path = dt_loc_expand_user_path(cachedir);
   gchar *previous = darktable.cachedir;
   const dt_loc_cache_dir_source_t previous_source = _user_cache_dir_source;
   const gboolean ok = dt_loc_init_user_cache_dir(path);

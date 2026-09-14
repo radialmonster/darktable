@@ -772,29 +772,70 @@ typedef enum dt_cachedir_pref_response_t
   DT_CACHEDIR_PREF_QUIT
 } dt_cachedir_pref_response_t;
 
+static gchar *_cachedir_in_library_rc = NULL;
+
+static gchar *_find_cachedir_value(const gchar *key, const gchar *value)
+{
+  // always return NULL: dt_conf_read_values() stops reading on a non-NULL
+  // result without closing the file
+  if(!g_strcmp0(key, "cachedir"))
+  {
+    g_free(_cachedir_in_library_rc);
+    _cachedir_in_library_rc = g_strdup(value);
+  }
+  return NULL;
+}
+
+// there is no main window yet, so keep the dialog recognizable and on top
+static void _cachedir_dialog_window_setup(GtkWidget *dialog)
+{
+  gtk_window_set_icon_name(GTK_WINDOW(dialog), "darktable");
+  gtk_window_set_keep_above(GTK_WINDOW(dialog), TRUE);
+  gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
+}
+
+static const char *_cachedir_check_text(const dt_loc_cache_dir_check_t check)
+{
+  switch(check)
+  {
+    case DT_LOC_CACHE_DIR_NOT_ABSOLUTE:
+      return _("this is not an absolute path, choose a folder instead");
+    case DT_LOC_CACHE_DIR_MISSING:
+      return _("if it is on an external drive, connect the drive and retry");
+    default:
+      return _("the folder cannot be opened, check its permissions and retry");
+  }
+}
+
 // the cache folder set in preferences is not available, typically an external
 // drive that is not connected. ask before anything uses the cache: retry,
 // choose another existing folder, use the default folder for this session or
-// quit. returns TRUE once the preferred or chosen folder is in use
-static gboolean _cachedir_pref_dialog(void)
+// quit. default_usable is FALSE when the default folder failed as well, then
+// that choice is not offered and closing the dialog quits. returns TRUE once
+// the preferred or chosen folder is in use
+static gboolean _cachedir_pref_dialog(const gboolean default_usable)
 {
   while(TRUE)
   {
     gchar *pref = g_strstrip(dt_conf_get_string("cachedir"));
-    GtkWidget *dialog = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+    const dt_loc_cache_dir_check_t check = dt_loc_check_user_cache_dir(pref);
+    const gboolean can_retry = check != DT_LOC_CACHE_DIR_NOT_ABSOLUTE;
+    GtkWidget *dialog = gtk_message_dialog_new(NULL, 0,
                                                GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE,
                                                _("the cache folder set in preferences is not available:\n\n"
                                                  "%s\n\n"
-                                                 "if it is on an external drive, connect the drive and retry"),
-                                               pref);
+                                                 "%s"),
+                                               pref, _cachedir_check_text(check));
     gtk_window_set_title(GTK_WINDOW(dialog), _("darktable - cache folder not available"));
-    gtk_dialog_add_buttons(GTK_DIALOG(dialog),
-                           _("_retry"), DT_CACHEDIR_PREF_RETRY,
-                           _("_choose folder..."), DT_CACHEDIR_PREF_CHOOSE,
-                           _("use _default folder"), DT_CACHEDIR_PREF_DEFAULT,
-                           _("_quit darktable"), DT_CACHEDIR_PREF_QUIT,
-                           NULL);
-    gtk_dialog_set_default_response(GTK_DIALOG(dialog), DT_CACHEDIR_PREF_RETRY);
+    _cachedir_dialog_window_setup(dialog);
+    if(can_retry)
+      gtk_dialog_add_button(GTK_DIALOG(dialog), _("_retry"), DT_CACHEDIR_PREF_RETRY);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), _("_choose folder..."), DT_CACHEDIR_PREF_CHOOSE);
+    if(default_usable)
+      gtk_dialog_add_button(GTK_DIALOG(dialog), _("use _default folder"), DT_CACHEDIR_PREF_DEFAULT);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), _("_quit darktable"), DT_CACHEDIR_PREF_QUIT);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog),
+                                    can_retry ? DT_CACHEDIR_PREF_RETRY : DT_CACHEDIR_PREF_CHOOSE);
     const int response = gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
 
@@ -824,18 +865,38 @@ static gboolean _cachedir_pref_dialog(void)
           g_free(pref);
           return TRUE;
         }
+        if(folder)
+        {
+          GtkWidget *error = gtk_message_dialog_new(NULL, 0,
+                                                    GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                                                    _("this folder cannot be used as cache folder:\n\n"
+                                                      "%s\n\n"
+                                                      "%s"),
+                                                    folder,
+                                                    _cachedir_check_text(dt_loc_check_user_cache_dir(folder)));
+          gtk_window_set_title(GTK_WINDOW(error), _("darktable - cache folder not available"));
+          _cachedir_dialog_window_setup(error);
+          gtk_dialog_run(GTK_DIALOG(error));
+          gtk_widget_destroy(error);
+        }
         g_free(folder);
         break;
       }
+
+      case DT_CACHEDIR_PREF_DEFAULT:
+        g_free(pref);
+        return FALSE;
 
       case DT_CACHEDIR_PREF_QUIT:
         g_free(pref);
         exit(EXIT_FAILURE);
 
       default:
-        // "use default folder", or the dialog was closed: carry on with the
-        // default folder and keep the preference for the next start
+        // the dialog was closed: carry on with the default folder and keep the
+        // preference for the next start, or quit when the default is unusable
         g_free(pref);
+        if(!default_usable)
+          exit(EXIT_FAILURE);
         return FALSE;
     }
     g_free(pref);
@@ -1729,6 +1790,26 @@ int dt_init(int argc,
   // user is asked what to do once GTK is up (_cachedir_pref_dialog)
   gboolean cachedir_pref_failed = FALSE;
   gchar *cachedir_pref = g_strstrip(dt_conf_get_string("cachedir"));
+  if(!cachedir_pref[0])
+  {
+    // a darktable without this preference saves the unknown key to
+    // darktablerc instead of darktablerc-common, and darktablerc is only read
+    // further down, so look for it there as well
+    const char *label = dt_conf_get_string_const("workspace/label");
+    char darktablerc[PATH_MAX] = { 0 };
+    snprintf(darktablerc, sizeof(darktablerc), "%s/darktablerc%s%s",
+             datadir, label[0] ? "-" : "", label);
+    g_free(dt_conf_read_values(darktablerc, _find_cachedir_value));
+    if(_cachedir_in_library_rc && g_strstrip(_cachedir_in_library_rc)[0])
+    {
+      g_free(cachedir_pref);
+      cachedir_pref = _cachedir_in_library_rc;
+      dt_conf_set_string("cachedir", cachedir_pref);
+    }
+    else
+      g_free(_cachedir_in_library_rc);
+    _cachedir_in_library_rc = NULL;
+  }
   if(!cachedir_from_command && cachedir_pref[0])
   {
     if(dt_loc_set_user_cache_dir(cachedir_pref))
@@ -1804,10 +1885,15 @@ int dt_init(int argc,
 
     if(cachedir_pref_failed)
     {
-      // the user answered here, so no toast about it later
+      // the user answers here, so no toast about it later. a failing config
+      // or tmp dir is fatal below anyway, so don't ask about the cache first
       cachedir_pref_failed = FALSE;
-      if(_cachedir_pref_dialog() && user_dir_failed == CACHEDIR_CREATION_FAILED)
-        user_dir_failed = 0;
+      if(!user_dir_failed || user_dir_failed == CACHEDIR_CREATION_FAILED)
+      {
+        const gboolean default_usable = user_dir_failed != CACHEDIR_CREATION_FAILED;
+        if(_cachedir_pref_dialog(default_usable))
+          user_dir_failed = 0;
+      }
     }
 
     if(user_dir_failed)

@@ -189,16 +189,19 @@ static void browse_dir_clicked(GtkWidget *button, gpointer user_data)
         _("select directory"), GTK_IS_WINDOW(win) ? GTK_WINDOW(win) : NULL,
         GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_select"), _("_cancel"));
 
-  const gchar *current = gtk_entry_get_text(entry);
-  if(current[0])
+  gchar *current = dt_loc_expand_user_path(gtk_entry_get_text(entry));
+  if(current && g_file_test(current, G_FILE_TEST_IS_DIR))
     gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), current);
+  g_free(current);
 
   if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
   {
     // the entry stays the pref's widget, so "changed" updates the
-    // non-default marker and the dialog response stores the value
+    // non-default marker and the dialog response stores the value.
+    // there is no filename for a location that is not a local folder
     gchar *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
-    gtk_entry_set_text(entry, folder);
+    if(folder)
+      gtk_entry_set_text(entry, folder);
     g_free(folder);
   }
   g_object_unref(chooser);
@@ -224,12 +227,9 @@ static void wrapup_pref(const gchar *name,
 static void open_dir_clicked(GtkWidget *button, gpointer user_data)
 {
   GtkEntry *entry = GTK_ENTRY(user_data);
-  gchar *dir = g_strstrip(g_strdup(gtk_entry_get_text(entry)));
-  if(!dir[0])
-  {
-    g_free(dir);
+  gchar *dir = dt_loc_expand_user_path(gtk_entry_get_text(entry));
+  if(!dir)
     dir = g_strdup(gtk_entry_get_placeholder_text(entry));
-  }
 
   if(!dt_show_in_file_manager(dir))
   {
@@ -252,7 +252,9 @@ static void open_dir_clicked(GtkWidget *button, gpointer user_data)
 
 // an empty entry means the default folder, so show that as placeholder, and
 // warn when the folder in use is not the one the entry implies: --cachedir
-// was given, or the preferred folder was unusable and the default is used
+// was given, or the preferred folder is unusable and the default is used.
+// the check is made now rather than taken from startup, so a folder chosen
+// in this session (used after a restart) does not get a false warning
 static void setup_cachedir_hint(GtkWidget *entry)
 {
   gchar *default_dir = dt_loc_get_default_user_cache_dir();
@@ -265,7 +267,8 @@ static void setup_cachedir_hint(GtkWidget *entry)
   if(source == DT_LOC_CACHE_DIR_COMMAND_LINE)
     tip = g_strdup_printf(_("darktable was started with --cachedir and uses %s"),
                           darktable.cachedir);
-  else if(value[0] && source != DT_LOC_CACHE_DIR_PREF)
+  else if(value[0] && source != DT_LOC_CACHE_DIR_PREF
+          && dt_loc_check_user_cache_dir(value) != DT_LOC_CACHE_DIR_USABLE)
     tip = g_strdup_printf(_("this folder is not usable, darktable uses %s"),
                           darktable.cachedir);
 

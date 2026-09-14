@@ -70,8 +70,25 @@ gboolean dt_loc_init_user_config_dir(const char *configdir);
 // Init user cache dir
 gboolean dt_loc_init_user_cache_dir(const char *cachedir);
 
-// Switch the user cache dir to an absolute folder, creating it if needed.
-// On failure the current cache dir is kept and FALSE is returned.
+// Expand a folder path typed or pasted by the user: trim surrounding blanks,
+// remove one pair of surrounding double quotes and expand a leading ~.
+// Returns NULL when nothing is left. Free with g_free().
+gchar *dt_loc_expand_user_path(const char *value);
+
+typedef enum dt_loc_cache_dir_check_t
+{
+  DT_LOC_CACHE_DIR_USABLE = 0,
+  DT_LOC_CACHE_DIR_NOT_ABSOLUTE,
+  DT_LOC_CACHE_DIR_MISSING
+} dt_loc_cache_dir_check_t;
+
+// Check a cache dir value (see dt_loc_expand_user_path()) without using it:
+// it must be an absolute path to an existing folder.
+dt_loc_cache_dir_check_t dt_loc_check_user_cache_dir(const char *cachedir);
+
+// Switch the user cache dir to an existing absolute folder. The folder is
+// never created. On failure the current cache dir is kept and FALSE is
+// returned.
 gboolean dt_loc_set_user_cache_dir(const char *cachedir);
 
 typedef enum dt_loc_cache_dir_source_t
