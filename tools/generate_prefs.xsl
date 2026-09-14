@@ -42,6 +42,8 @@
 #include "control/conf.h"
 #include "common/calculator.h"
 #include "gui/preferences.h"
+#include "dtgtk/button.h"
+#include "dtgtk/paint.h"
 
 #define NON_DEF_CHAR "●"
 
@@ -179,6 +181,29 @@ static void setup_not_available(GtkWidget **widget,
   gtk_widget_set_sensitive(*widget, FALSE);
 }
 
+static void browse_dir_clicked(GtkWidget *button, gpointer user_data)
+{
+  GtkEntry *entry = GTK_ENTRY(user_data);
+  GtkWidget *win = gtk_widget_get_toplevel(button);
+  GtkFileChooserNative *chooser = gtk_file_chooser_native_new(
+        _("select directory"), GTK_IS_WINDOW(win) ? GTK_WINDOW(win) : NULL,
+        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_select"), _("_cancel"));
+
+  const gchar *current = gtk_entry_get_text(entry);
+  if(current[0])
+    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), current);
+
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+  {
+    // the entry stays the pref's widget, so "changed" updates the
+    // non-default marker and the dialog response stores the value
+    gchar *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+    gtk_entry_set_text(entry, folder);
+    g_free(folder);
+  }
+  g_object_unref(chooser);
+}
+
 static void wrapup_pref(const gchar *name,
                         GtkWidget *grid,
                         GtkWidget *labelev,
@@ -192,6 +217,105 @@ static void wrapup_pref(const gchar *name,
   gtk_grid_attach(GTK_GRID(grid), labelev, 0, *line, 1, 1);
   gtk_grid_attach(GTK_GRID(grid), labdef, 1, *line, 1, 1);
   gtk_grid_attach(GTK_GRID(grid), widget, 2, (*line)++, 1, 1);
+  gtk_label_set_mnemonic_widget(GTK_LABEL(label), widget);
+  g_signal_connect(G_OBJECT(labelev), "button-press-event", G_CALLBACK(callback), (gpointer)widget);
+}
+
+static void open_dir_clicked(GtkWidget *button, gpointer user_data)
+{
+  GtkEntry *entry = GTK_ENTRY(user_data);
+  gchar *dir = g_strstrip(g_strdup(gtk_entry_get_text(entry)));
+  if(!dir[0])
+  {
+    g_free(dir);
+    dir = g_strdup(gtk_entry_get_placeholder_text(entry));
+  }
+
+  if(!dt_show_in_file_manager(dir))
+  {
+    // a toast would be drawn behind the modal preferences dialog
+    GtkWidget *win = gtk_widget_get_toplevel(button);
+    GtkWindow *parent = GTK_IS_WINDOW(win) ? GTK_WINDOW(win) : NULL;
+    const GtkDialogFlags flags = GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT;
+    GtkWidget *msg = dir && dir[0]
+      ? gtk_message_dialog_new(parent, flags, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                               _("the folder %s does not exist or cannot be opened"
+                                 " in the file manager"), dir)
+      : gtk_message_dialog_new(parent, flags, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+                               "%s", _("no folder is set"));
+    gtk_window_set_title(GTK_WINDOW(msg), _("cannot open folder"));
+    gtk_dialog_run(GTK_DIALOG(msg));
+    gtk_widget_destroy(msg);
+  }
+  g_free(dir);
+}
+
+// an empty entry means the default folder, so show that as placeholder, and
+// warn when the folder in use is not the one the entry implies: --cachedir
+// was given, or the preferred folder was unusable and the default is used
+static void setup_cachedir_hint(GtkWidget *entry)
+{
+  gchar *default_dir = dt_loc_get_default_user_cache_dir();
+  gtk_entry_set_placeholder_text(GTK_ENTRY(entry), default_dir);
+  g_free(default_dir);
+
+  const dt_loc_cache_dir_source_t source = dt_loc_get_user_cache_dir_source();
+  gchar *value = g_strstrip(dt_conf_get_string("cachedir"));
+  gchar *tip = NULL;
+  if(source == DT_LOC_CACHE_DIR_COMMAND_LINE)
+    tip = g_strdup_printf(_("darktable was started with --cachedir and uses %s"),
+                          darktable.cachedir);
+  else if(value[0] && source != DT_LOC_CACHE_DIR_PREF)
+    tip = g_strdup_printf(_("this folder is not usable, darktable uses %s"),
+                          darktable.cachedir);
+
+  if(tip)
+  {
+    gtk_entry_set_icon_from_icon_name(GTK_ENTRY(entry), GTK_ENTRY_ICON_SECONDARY,
+                                      "dialog-warning-symbolic");
+    gtk_entry_set_icon_tooltip_text(GTK_ENTRY(entry), GTK_ENTRY_ICON_SECONDARY, tip);
+    g_free(tip);
+  }
+  g_free(value);
+}
+
+static void wrapup_pref_dir(const gchar *name,
+                            GtkWidget *grid,
+                            GtkWidget *labelev,
+                            GtkWidget *labdef,
+                            GtkWidget *label,
+                            GtkWidget *widget,
+                            int *line,
+                            gboolean (*callback)(GtkWidget *, GdkEventButton *, GtkWidget*))
+{
+  // setup_not_available() may have replaced the entry with a label
+  if(!GTK_IS_ENTRY(widget))
+  {
+    wrapup_pref(name, grid, labelev, labdef, label, widget, line, callback);
+    return;
+  }
+
+  // the entry stays the widget the reset and response callbacks work on;
+  // the browse button only fills it in
+  GtkWidget *browse = dtgtk_button_new_full(dtgtk_cairo_paint_directory, CPF_NONE, NULL,
+    &(dtgtk_button_config_t){
+      .tooltip = _("select directory"),
+      .clicked_cb = G_CALLBACK(browse_dir_clicked),
+      .clicked_data = widget,
+    });
+  gtk_widget_set_name(browse, "non-flat");
+
+  GtkWidget *open_btn = gtk_button_new_with_label(_("open"));
+  gtk_widget_set_tooltip_text(open_btn, _("open the folder in the file manager"));
+  g_signal_connect(G_OBJECT(open_btn), "clicked", G_CALLBACK(open_dir_clicked), widget);
+
+  if(!g_strcmp0(name, "cachedir"))
+    setup_cachedir_hint(widget);
+
+  gtk_widget_set_name(widget, name);
+  gtk_grid_attach(GTK_GRID(grid), labelev, 0, *line, 1, 1);
+  gtk_grid_attach(GTK_GRID(grid), labdef, 1, *line, 1, 1);
+  gtk_grid_attach(GTK_GRID(grid), dt_gui_hbox(widget, browse, open_btn), 2, (*line)++, 1, 1);
   gtk_label_set_mnemonic_widget(GTK_LABEL(label), widget);
   g_signal_connect(G_OBJECT(labelev), "button-press-event", G_CALLBACK(callback), (gpointer)widget);
 }
@@ -459,7 +583,7 @@ static void init_tab_generated(GtkWidget *dialog, GtkWidget *stack)
     }</xsl:text>
     </xsl:if>
     <xsl:text>
-    wrapup_pref("</xsl:text><xsl:value-of select="name"/><xsl:text>",
+    wrapup_pref</xsl:text><xsl:if test="@dirchooser = 'yes'"><xsl:text>_dir</xsl:text></xsl:if><xsl:text>("</xsl:text><xsl:value-of select="name"/><xsl:text>",
                 grid, labelev, labdef, label, widget, &amp;line,
                 </xsl:text>
    <xsl:choose>

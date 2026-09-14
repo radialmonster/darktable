@@ -764,6 +764,84 @@ static dt_job_t *_backthumbs_job_create(void)
   return job;
 }
 
+typedef enum dt_cachedir_pref_response_t
+{
+  DT_CACHEDIR_PREF_RETRY = 1,
+  DT_CACHEDIR_PREF_CHOOSE,
+  DT_CACHEDIR_PREF_DEFAULT,
+  DT_CACHEDIR_PREF_QUIT
+} dt_cachedir_pref_response_t;
+
+// the cache folder set in preferences is not available, typically an external
+// drive that is not connected. ask before anything uses the cache: retry,
+// choose another existing folder, use the default folder for this session or
+// quit. returns TRUE once the preferred or chosen folder is in use
+static gboolean _cachedir_pref_dialog(void)
+{
+  while(TRUE)
+  {
+    gchar *pref = g_strstrip(dt_conf_get_string("cachedir"));
+    GtkWidget *dialog = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+                                               GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE,
+                                               _("the cache folder set in preferences is not available:\n\n"
+                                                 "%s\n\n"
+                                                 "if it is on an external drive, connect the drive and retry"),
+                                               pref);
+    gtk_window_set_title(GTK_WINDOW(dialog), _("darktable - cache folder not available"));
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog),
+                           _("_retry"), DT_CACHEDIR_PREF_RETRY,
+                           _("_choose folder..."), DT_CACHEDIR_PREF_CHOOSE,
+                           _("use _default folder"), DT_CACHEDIR_PREF_DEFAULT,
+                           _("_quit darktable"), DT_CACHEDIR_PREF_QUIT,
+                           NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), DT_CACHEDIR_PREF_RETRY);
+    const int response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    switch(response)
+    {
+      case DT_CACHEDIR_PREF_RETRY:
+        if(dt_loc_set_user_cache_dir(pref))
+        {
+          g_free(pref);
+          return TRUE;
+        }
+        break;
+
+      case DT_CACHEDIR_PREF_CHOOSE:
+      {
+        GtkFileChooserNative *chooser = gtk_file_chooser_native_new(
+          _("select directory"), NULL, GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+          _("_select"), _("_cancel"));
+        gchar *folder = NULL;
+        if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+          folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+        g_object_unref(chooser);
+        if(folder && dt_loc_set_user_cache_dir(folder))
+        {
+          dt_conf_set_string("cachedir", folder);
+          g_free(folder);
+          g_free(pref);
+          return TRUE;
+        }
+        g_free(folder);
+        break;
+      }
+
+      case DT_CACHEDIR_PREF_QUIT:
+        g_free(pref);
+        exit(EXIT_FAILURE);
+
+      default:
+        // "use default folder", or the dialog was closed: carry on with the
+        // default folder and keep the preference for the next start
+        g_free(pref);
+        return FALSE;
+    }
+    g_free(pref);
+  }
+}
+
 static void _wait_backthumbs_crawler(void)
 {
   dt_backthumb_t *bt = &darktable.backthumbs;
@@ -1524,12 +1602,12 @@ int dt_init(int argc,
   // Set directories as requested or default.
   // Set a result flag so if we can't create certain directories, we can
   // later, after initializing the GUI, show the user a message and exit.
-  const uint8_t user_dir_failed = dt_loc_init(datadir_from_command,
-                                              moduledir_from_command,
-                                              localedir_from_command,
-                                              configdir_from_command,
-                                              cachedir_from_command,
-                                              tmpdir_from_command);
+  uint8_t user_dir_failed = dt_loc_init(datadir_from_command,
+                                        moduledir_from_command,
+                                        localedir_from_command,
+                                        configdir_from_command,
+                                        cachedir_from_command,
+                                        tmpdir_from_command);
 
   dt_print_mem_usage("at startup");
 
@@ -1644,6 +1722,25 @@ int dt_init(int argc,
   // darktableconfig.xml.in.
   dt_conf_init(darktable.conf, darktablerc_common, TRUE, config_override);
 
+  // the cachedir preference lives in darktablerc-common, so it can only be
+  // applied now: before --print-paths, the directory failure dialog and the
+  // first cache user. --cachedir takes precedence and a blank value means the
+  // default. an unavailable folder keeps the default for now; with a GUI the
+  // user is asked what to do once GTK is up (_cachedir_pref_dialog)
+  gboolean cachedir_pref_failed = FALSE;
+  gchar *cachedir_pref = g_strstrip(dt_conf_get_string("cachedir"));
+  if(!cachedir_from_command && cachedir_pref[0])
+  {
+    if(dt_loc_set_user_cache_dir(cachedir_pref))
+    {
+      if(user_dir_failed == CACHEDIR_CREATION_FAILED)
+        user_dir_failed = 0;
+    }
+    else
+      cachedir_pref_failed = TRUE;
+  }
+  g_free(cachedir_pref);
+
   if(print_paths || print_paths_as_flags)
   {
     // Resolve the same darktablerc-<label>/database-key path real
@@ -1704,6 +1801,14 @@ int dt_init(int argc,
 
     darktable.themes = NULL;
     dt_gui_theme_init(darktable.gui);
+
+    if(cachedir_pref_failed)
+    {
+      // the user answered here, so no toast about it later
+      cachedir_pref_failed = FALSE;
+      if(_cachedir_pref_dialog() && user_dir_failed == CACHEDIR_CREATION_FAILED)
+        user_dir_failed = 0;
+    }
 
     if(user_dir_failed)
     {
@@ -1858,6 +1963,11 @@ int dt_init(int argc,
   darktable.signals = dt_control_signal_init();
 
   dt_control_init(init_gui);
+
+  if(cachedir_pref_failed)
+    dt_control_log(_("cache folder from preferences is not usable, using %s"),
+                   darktable.cachedir);
+
   if(init_gui)
   {
     darktable.undo = dt_undo_init();

@@ -27,6 +27,7 @@
   <dttab name="storage" title="storage">
     <section name="database" title="database"/>
     <section name="XMP" title="XMP sidecar files"/>
+    <section name="cache" title="cache"/>
   </dttab>
   <dttab name="misc" title="miscellaneous">
     <section name="interface" title="interface"/>
@@ -264,6 +265,13 @@
     <default>10</default>
     <shortdescription>how many snapshots to keep</shortdescription>
     <longdescription>after successfully creating snapshot, how many older snapshots to keep (excluding mandatory version update ones). enter -1 to keep all snapshots\nkeep in mind that snapshots do take some space and you only need the most recent one for successful restore</longdescription>
+  </dtconfig>
+  <dtconfig prefs="storage" section="cache" common="yes" restart="true" dirchooser="yes">
+    <name>cachedir</name>
+    <type>string</type>
+    <default></default>
+    <shortdescription>cache folder</shortdescription>
+    <longdescription>folder for thumbnails, compiled OpenCL kernels, local copies and AI caches. leave empty for the default location, otherwise choose an existing folder. the --cachedir command line option takes precedence.\nthe new folder is used after darktable is restarted, and thumbnails and kernels are rebuilt there as needed. existing cache files, including local copies, are not moved and stay in the old folder</longdescription>
   </dtconfig>
   <dtconfig>
     <name>min_panel_height</name>

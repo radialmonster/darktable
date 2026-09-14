@@ -67,10 +67,12 @@ uint8_t dt_loc_init(const char *datadir,
   free(application_directory);
 
   if(!dt_loc_init_user_config_dir(configdir)) return CONFIGDIR_CREATION_FAILED;
-  if(!dt_loc_init_user_cache_dir(cachedir)) return CACHEDIR_CREATION_FAILED;
+  // a failing cache dir must not skip the tmp dir: the cachedir preference,
+  // applied later by dt_init(), can still replace it
+  const gboolean cachedir_ok = dt_loc_init_user_cache_dir(cachedir);
   if(!dt_loc_init_tmp_dir(tmpdir)) return TMPDIR_CREATION_FAILED;
 
-  return 0;
+  return cachedir_ok ? 0 : CACHEDIR_CREATION_FAILED;
 }
 
 void dt_loc_print_paths(FILE *out, const char *library_path, gboolean as_flags)
@@ -226,12 +228,78 @@ gboolean dt_loc_init_tmp_dir(const char *tmpdir)
   return dt_check_opendir("darktable.tmpdir", darktable.tmpdir);
 }
 
+static dt_loc_cache_dir_source_t _user_cache_dir_source = DT_LOC_CACHE_DIR_DEFAULT;
+
+dt_loc_cache_dir_source_t dt_loc_get_user_cache_dir_source(void)
+{
+  return _user_cache_dir_source;
+}
+
+gchar *dt_loc_get_default_user_cache_dir(void)
+{
+  return g_build_filename(g_get_user_cache_dir(), "darktable", NULL);
+}
+
 gboolean dt_loc_init_user_cache_dir(const char *cachedir)
 {
-  char *default_cache_dir = g_build_filename(g_get_user_cache_dir(), "darktable", NULL);
+  char *default_cache_dir = dt_loc_get_default_user_cache_dir();
   darktable.cachedir = dt_loc_init_generic(cachedir, NULL, default_cache_dir);
   g_free(default_cache_dir);
+  _user_cache_dir_source = cachedir ? DT_LOC_CACHE_DIR_COMMAND_LINE : DT_LOC_CACHE_DIR_DEFAULT;
   return dt_check_opendir("darktable.cachedir", darktable.cachedir);
+}
+
+gboolean dt_loc_set_user_cache_dir(const char *cachedir)
+{
+  // pasted values often carry surrounding spaces, or the quotes of a path
+  // copied from the Windows explorer
+  gchar *value = g_strstrip(g_strdup(cachedir ? cachedir : ""));
+  const size_t len = strlen(value);
+  if(len >= 2 && value[0] == '"' && value[len - 1] == '"')
+  {
+    memmove(value, value + 1, len - 2);
+    value[len - 2] = '\0';
+  }
+
+  gchar *path = dt_util_fix_path(value);
+  if(!path || !g_path_is_absolute(path))
+  {
+    dt_print(DT_DEBUG_ALWAYS,
+             "[dt_loc_set_user_cache_dir] cache folder '%s' is not an absolute path",
+             value);
+    g_free(value);
+    g_free(path);
+    return FALSE;
+  }
+  g_free(value);
+
+  // the folder must already exist: creating it while an external drive is
+  // missing would silently put the cache on another drive that took the same
+  // letter, or inside an empty mount point. it also keeps
+  // dt_loc_init_generic() away from g_realpath(), which exits on non-Windows
+  // when the folder does not exist (grealpath.h)
+  if(!g_file_test(path, G_FILE_TEST_IS_DIR))
+  {
+    dt_print(DT_DEBUG_ALWAYS,
+             "[dt_loc_set_user_cache_dir] cache folder '%s' does not exist", path);
+    g_free(path);
+    return FALSE;
+  }
+
+  gchar *previous = darktable.cachedir;
+  const dt_loc_cache_dir_source_t previous_source = _user_cache_dir_source;
+  const gboolean ok = dt_loc_init_user_cache_dir(path);
+  g_free(path);
+  if(!ok)
+  {
+    g_free(darktable.cachedir);
+    darktable.cachedir = previous;
+    _user_cache_dir_source = previous_source;
+    return FALSE;
+  }
+  g_free(previous);
+  _user_cache_dir_source = DT_LOC_CACHE_DIR_PREF;
+  return TRUE;
 }
 
 void dt_loc_init_plugindir(const char* application_directory, const char *plugindir)

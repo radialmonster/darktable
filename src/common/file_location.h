@@ -70,6 +70,25 @@ gboolean dt_loc_init_user_config_dir(const char *configdir);
 // Init user cache dir
 gboolean dt_loc_init_user_cache_dir(const char *cachedir);
 
+// Switch the user cache dir to an absolute folder, creating it if needed.
+// On failure the current cache dir is kept and FALSE is returned.
+gboolean dt_loc_set_user_cache_dir(const char *cachedir);
+
+typedef enum dt_loc_cache_dir_source_t
+{
+  DT_LOC_CACHE_DIR_DEFAULT = 0,
+  DT_LOC_CACHE_DIR_COMMAND_LINE,
+  DT_LOC_CACHE_DIR_PREF
+} dt_loc_cache_dir_source_t;
+
+// Where the cache dir in use comes from: the default, --cachedir, or the
+// cachedir preference set by dt_loc_set_user_cache_dir().
+dt_loc_cache_dir_source_t dt_loc_get_user_cache_dir_source(void);
+
+// The default user cache dir, used when neither --cachedir nor the
+// preference is set. Free with g_free().
+gchar *dt_loc_get_default_user_cache_dir(void);
+
 // Init specific dir. Default value is appended to application_directory
 // if application_directory is not NULL.
 gchar *dt_loc_init_generic(const char *absolute_value,
