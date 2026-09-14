@@ -581,6 +581,15 @@ gboolean dt_conf_key_exists(const char *key)
   return (res || dt_confgen_value_exists(key, DT_DEFAULT));
 }
 
+/** check if key is set with --conf on the command line */
+gboolean dt_conf_is_overridden(const char *key)
+{
+  dt_pthread_mutex_lock(&darktable.conf->mutex);
+  const gboolean res = g_hash_table_lookup(darktable.conf->override_entries, key) != NULL;
+  dt_pthread_mutex_unlock(&darktable.conf->mutex);
+  return res;
+}
+
 /** remove key from conf */
 void dt_conf_remove_key(const char *key)
 {

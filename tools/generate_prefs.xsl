@@ -267,6 +267,11 @@ static void setup_cachedir_hint(GtkWidget *entry)
   if(source == DT_LOC_CACHE_DIR_COMMAND_LINE)
     tip = g_strdup_printf(_("darktable was started with --cachedir and uses %s"),
                           darktable.cachedir);
+  // the entry shows the --conf value, which a change here does not replace
+  // before the next start
+  else if(dt_conf_is_overridden("cachedir"))
+    tip = g_strdup_printf(_("set with --conf for this session, darktable uses %s"),
+                          darktable.cachedir);
   else if(value[0] && source != DT_LOC_CACHE_DIR_PREF
           && dt_loc_check_user_cache_dir(value) != DT_LOC_CACHE_DIR_USABLE)
     tip = g_strdup_printf(_("this folder is not usable, darktable uses %s"),
@@ -662,8 +667,20 @@ static void init_tab_generated(GtkWidget *dialog, GtkWidget *stack)
 
 <!-- CHANGE -->
   <xsl:template match="dtconfig[type='string']" mode="change">
+  <xsl:choose>
+    <xsl:when test="@dirchooser = 'yes'">
+  <xsl:text>
+    // blanks alone mean the default folder, store them as empty so the
+    // placeholder shows the default again
+    gchar *folder = g_strstrip(g_strdup(gtk_entry_get_text(GTK_ENTRY(widget))));
+    dt_conf_set_string("</xsl:text><xsl:value-of select="name"/><xsl:text>", folder);
+    g_free(folder);</xsl:text>
+    </xsl:when>
+    <xsl:otherwise>
   <xsl:text>
     dt_conf_set_string("</xsl:text><xsl:value-of select="name"/><xsl:text>", gtk_entry_get_text(GTK_ENTRY(widget)));</xsl:text>
+    </xsl:otherwise>
+  </xsl:choose>
   </xsl:template>
 
   <xsl:template match="dtconfig[type='longstring']" mode="change">

@@ -69,6 +69,9 @@
 #include "gui/workspace.h"
 #include "gui/gtk.h"
 #include "gui/guides.h"
+#ifdef GDK_WINDOWING_QUARTZ
+#include "osx/osx.h"
+#endif
 #include "gui/presets.h"
 #include "gui/styles.h"
 #include "gui/splash.h"
@@ -792,6 +795,9 @@ static void _cachedir_dialog_window_setup(GtkWidget *dialog)
   gtk_window_set_icon_name(GTK_WINDOW(dialog), "darktable");
   gtk_window_set_keep_above(GTK_WINDOW(dialog), TRUE);
   gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER);
+#ifdef GDK_WINDOWING_QUARTZ
+  dt_osx_disallow_fullscreen(dialog);
+#endif
 }
 
 static const char *_cachedir_check_text(const dt_loc_cache_dir_check_t check)
