@@ -124,6 +124,9 @@ void dt_loc_get_localedir(char *localedir, size_t bufsize);
 void dt_loc_get_tmp_dir(char *tmpdir, size_t bufsize);
 void dt_loc_get_user_config_dir(char *configdir, size_t bufsize);
 void dt_loc_get_user_cache_dir(char *cachedir, size_t bufsize);
+// Folder for local copies: the cache dir resolved at startup from --cachedir
+// or the default, never the cachedir preference.
+void dt_loc_get_user_local_copy_dir(char *dir, size_t bufsize);
 
 G_END_DECLS
 

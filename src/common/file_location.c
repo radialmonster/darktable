@@ -229,6 +229,7 @@ gboolean dt_loc_init_tmp_dir(const char *tmpdir)
 }
 
 static dt_loc_cache_dir_source_t _user_cache_dir_source = DT_LOC_CACHE_DIR_DEFAULT;
+static gchar *_user_local_copy_dir = NULL;
 
 dt_loc_cache_dir_source_t dt_loc_get_user_cache_dir_source(void)
 {
@@ -246,6 +247,8 @@ gboolean dt_loc_init_user_cache_dir(const char *cachedir)
   darktable.cachedir = dt_loc_init_generic(cachedir, NULL, default_cache_dir);
   g_free(default_cache_dir);
   _user_cache_dir_source = cachedir ? DT_LOC_CACHE_DIR_COMMAND_LINE : DT_LOC_CACHE_DIR_DEFAULT;
+  g_free(_user_local_copy_dir);
+  _user_local_copy_dir = g_strdup(darktable.cachedir);
   return dt_check_opendir("darktable.cachedir", darktable.cachedir);
 }
 
@@ -311,8 +314,13 @@ gboolean dt_loc_set_user_cache_dir(const char *cachedir)
   gchar *path = dt_loc_expand_user_path(cachedir);
   gchar *previous = darktable.cachedir;
   const dt_loc_cache_dir_source_t previous_source = _user_cache_dir_source;
+  gchar *local_copy_dir = g_strdup(_user_local_copy_dir);
   const gboolean ok = dt_loc_init_user_cache_dir(path);
   g_free(path);
+  // local copies keep the folder resolved at startup: the database flags them
+  // as copied, so moving the cache would leave them flagged but not found
+  g_free(_user_local_copy_dir);
+  _user_local_copy_dir = local_copy_dir;
   if(!ok)
   {
     g_free(darktable.cachedir);
@@ -411,6 +419,10 @@ void dt_loc_get_user_config_dir(char *configdir, size_t bufsize)
 void dt_loc_get_user_cache_dir(char *cachedir, size_t bufsize)
 {
   g_strlcpy(cachedir, darktable.cachedir, bufsize);
+}
+void dt_loc_get_user_local_copy_dir(char *dir, size_t bufsize)
+{
+  g_strlcpy(dir, _user_local_copy_dir ? _user_local_copy_dir : darktable.cachedir, bufsize);
 }
 void dt_loc_get_tmp_dir(char *tmpdir, size_t bufsize)
 {
