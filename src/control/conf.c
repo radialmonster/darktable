@@ -590,6 +590,23 @@ gboolean dt_conf_is_overridden(const char *key)
   return res;
 }
 
+/** get the value stored for key, ignoring --conf, NULL if there is none. free with g_free() */
+gchar *dt_conf_get_stored_string(const char *key)
+{
+  dt_pthread_mutex_lock(&darktable.conf->mutex);
+  gchar *res = g_strdup(g_hash_table_lookup(darktable.conf->table, key));
+  dt_pthread_mutex_unlock(&darktable.conf->mutex);
+  return res;
+}
+
+/** store the value saved for key, also when --conf overrides it for this session */
+void dt_conf_set_stored_string(const char *key, const char *value)
+{
+  dt_pthread_mutex_lock(&darktable.conf->mutex);
+  g_hash_table_insert(darktable.conf->table, g_strdup(key), g_strdup(value));
+  dt_pthread_mutex_unlock(&darktable.conf->mutex);
+}
+
 /** remove key from conf */
 void dt_conf_remove_key(const char *key)
 {

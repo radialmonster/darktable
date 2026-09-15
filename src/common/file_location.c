@@ -230,10 +230,22 @@ gboolean dt_loc_init_tmp_dir(const char *tmpdir)
 
 static dt_loc_cache_dir_source_t _user_cache_dir_source = DT_LOC_CACHE_DIR_DEFAULT;
 static gchar *_user_local_copy_dir = NULL;
+// the preference value applied by dt_loc_set_user_cache_dir(), expanded
+static gchar *_user_cache_dir_pref = NULL;
 
 dt_loc_cache_dir_source_t dt_loc_get_user_cache_dir_source(void)
 {
   return _user_cache_dir_source;
+}
+
+gboolean dt_loc_user_cache_dir_is_from(const char *value)
+{
+  gchar *path = dt_loc_expand_user_path(value);
+  const gboolean res = path
+    ? _user_cache_dir_source == DT_LOC_CACHE_DIR_PREF && !g_strcmp0(path, _user_cache_dir_pref)
+    : _user_cache_dir_source == DT_LOC_CACHE_DIR_DEFAULT;
+  g_free(path);
+  return res;
 }
 
 gchar *dt_loc_get_default_user_cache_dir(void)
@@ -274,23 +286,40 @@ gchar *dt_loc_expand_user_path(const char *value)
   return path;
 }
 
+gboolean dt_loc_path_is_absolute(const char *path)
+{
+  if(!path || !g_path_is_absolute(path))
+    return FALSE;
+#ifdef _WIN32
+  // "\folder" is absolute for glib, but it depends on the current drive
+  return (g_ascii_isalpha(path[0]) && path[1] == ':')
+         || (G_IS_DIR_SEPARATOR(path[0]) && G_IS_DIR_SEPARATOR(path[1]));
+#else
+  return TRUE;
+#endif
+}
+
 dt_loc_cache_dir_check_t dt_loc_check_user_cache_dir(const char *cachedir)
 {
   gchar *path = dt_loc_expand_user_path(cachedir);
   dt_loc_cache_dir_check_t check = DT_LOC_CACHE_DIR_USABLE;
-  if(!path || !g_path_is_absolute(path))
+  if(!dt_loc_path_is_absolute(path))
     check = DT_LOC_CACHE_DIR_NOT_ABSOLUTE;
-#ifdef _WIN32
-  // GLib accepts "\folder" as absolute, but it depends on the current drive
-  else if(!(g_ascii_isalpha(path[0]) && path[1] == ':')
-          && !(G_IS_DIR_SEPARATOR(path[0]) && G_IS_DIR_SEPARATOR(path[1])))
-    check = DT_LOC_CACHE_DIR_NOT_ABSOLUTE;
-#endif
   // the folder must already exist: creating it while an external drive is
   // missing would silently put the cache on another drive that took the same
   // letter, or inside an empty mount point
   else if(!g_file_test(path, G_FILE_TEST_IS_DIR))
     check = DT_LOC_CACHE_DIR_MISSING;
+  else
+  {
+    // a folder that cannot be listed or written to would only fail later,
+    // when it is opened or thumbnails and kernels are written. on windows
+    // neither check rejects an existing folder, like dt_check_opendir() there
+    GDir *dir = g_dir_open(path, 0, NULL);
+    if(!dir || !dt_util_test_writable_dir(path))
+      check = DT_LOC_CACHE_DIR_NO_ACCESS;
+    if(dir) g_dir_close(dir);
+  }
   g_free(path);
   return check;
 }
@@ -300,36 +329,45 @@ gboolean dt_loc_set_user_cache_dir(const char *cachedir)
   const dt_loc_cache_dir_check_t check = dt_loc_check_user_cache_dir(cachedir);
   if(check != DT_LOC_CACHE_DIR_USABLE)
   {
-    dt_print(DT_DEBUG_ALWAYS,
-             check == DT_LOC_CACHE_DIR_NOT_ABSOLUTE
-               ? "[dt_loc_set_user_cache_dir] cache folder '%s' is not an absolute path"
-               : "[dt_loc_set_user_cache_dir] cache folder '%s' does not exist",
-             cachedir ? cachedir : "");
+    dt_print(DT_DEBUG_ALWAYS, "[dt_loc_set_user_cache_dir] cache folder '%s' %s",
+             cachedir ? cachedir : "",
+             check == DT_LOC_CACHE_DIR_NOT_ABSOLUTE ? "is not an absolute path"
+             : check == DT_LOC_CACHE_DIR_MISSING    ? "does not exist"
+                                                    : "cannot be listed or written to");
     return FALSE;
   }
 
-  // the check above guarantees an existing folder, which keeps
-  // dt_loc_init_generic() away from g_realpath() exiting on non-Windows
-  // (grealpath.h)
-  gchar *path = dt_loc_expand_user_path(cachedir);
-  gchar *previous = darktable.cachedir;
-  const dt_loc_cache_dir_source_t previous_source = _user_cache_dir_source;
-  gchar *local_copy_dir = g_strdup(_user_local_copy_dir);
-  const gboolean ok = dt_loc_init_user_cache_dir(path);
-  g_free(path);
-  // local copies keep the folder resolved at startup: the database flags them
-  // as copied, so moving the cache would leave them flagged but not found
-  g_free(_user_local_copy_dir);
-  _user_local_copy_dir = local_copy_dir;
-  if(!ok)
+  // resolved here rather than by dt_loc_init_user_cache_dir(): its
+  // dt_loc_init_generic() would create a folder that went missing since the
+  // check above, and exit on non-windows when the path cannot be resolved
+  // (grealpath.h). local copies keep the folder resolved at startup, even
+  // when it cannot be used: the database flags them as copied without their
+  // location, so any other folder would leave them flagged but not found at a
+  // later start
+  gchar *expanded = dt_loc_expand_user_path(cachedir);
+#ifdef _WIN32
+  gchar *path = g_realpath(expanded);
+#else
+  char resolved[PATH_MAX] = { 0 };
+  gchar *path = realpath(expanded, resolved) ? g_strdup(resolved) : NULL;
+#endif
+  g_free(expanded);
+  if(!path)
   {
-    g_free(darktable.cachedir);
-    darktable.cachedir = previous;
-    _user_cache_dir_source = previous_source;
+    dt_print(DT_DEBUG_ALWAYS,
+             "[dt_loc_set_user_cache_dir] cache folder '%s' cannot be resolved", cachedir);
     return FALSE;
   }
-  g_free(previous);
+  if(!dt_check_opendir("darktable.cachedir", path))
+  {
+    g_free(path);
+    return FALSE;
+  }
+  g_free(darktable.cachedir);
+  darktable.cachedir = path;
   _user_cache_dir_source = DT_LOC_CACHE_DIR_PREF;
+  g_free(_user_cache_dir_pref);
+  _user_cache_dir_pref = dt_loc_expand_user_path(cachedir);
   return TRUE;
 }
 

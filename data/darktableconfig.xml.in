@@ -271,7 +271,7 @@
     <type>string</type>
     <default></default>
     <shortdescription>cache folder</shortdescription>
-    <longdescription>folder for thumbnails, compiled OpenCL kernels and AI caches. leave empty for the default location, otherwise choose an existing folder. the --cachedir command line option takes precedence. local copies are not affected and stay in the default cache folder.\nthe new folder is used after darktable is restarted, and thumbnails and kernels are rebuilt there as needed. existing cache files are not moved</longdescription>
+    <longdescription>folder for thumbnails, compiled OpenCL kernels and AI caches. leave empty for the default location, otherwise choose an existing folder darktable can write to. the --cachedir command line option takes precedence. local copies are not affected and stay in the default cache folder, or in the --cachedir folder when that option is given.\nthe new folder is used after darktable is restarted, and thumbnails and kernels are rebuilt there as needed. existing cache files are not moved</longdescription>
   </dtconfig>
   <dtconfig>
     <name>min_panel_height</name>

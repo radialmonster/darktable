@@ -208,7 +208,8 @@ void dt_gui_remove_class(GtkWidget *widget, const gchar *class_name);
 gboolean dt_gui_pointer_is_grabbed(void);
 
 void dt_open_url(const char *url);
-// show a local folder in the system file manager, FALSE if that failed
+// show a local folder, given as absolute path, in the system file manager;
+// returns FALSE if that failed
 gboolean dt_show_in_file_manager(const char *path);
 int dt_gui_theme_init(dt_gui_gtk_t *gui);
 int dt_gui_gtk_init(dt_gui_gtk_t *gui);

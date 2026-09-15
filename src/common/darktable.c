@@ -69,9 +69,6 @@
 #include "gui/workspace.h"
 #include "gui/gtk.h"
 #include "gui/guides.h"
-#ifdef GDK_WINDOWING_QUARTZ
-#include "osx/osx.h"
-#endif
 #include "gui/presets.h"
 #include "gui/styles.h"
 #include "gui/splash.h"
@@ -81,6 +78,9 @@
 #include "lua/init.h"
 #include "views/view.h"
 #include "conf_gen.h"
+#ifdef GDK_WINDOWING_QUARTZ
+#include "osx/osx.h"
+#endif
 
 #include <errno.h>
 #include <glib.h>
@@ -767,15 +767,51 @@ static dt_job_t *_backthumbs_job_create(void)
   return job;
 }
 
-typedef enum dt_cachedir_pref_response_t
+static void _wait_backthumbs_crawler(void)
+{
+  dt_backthumb_t *bt = &darktable.backthumbs;
+  for(int i = 0; i < 1000 && bt->state == DT_JOB_STATE_CANCELLED; i++)
+    g_usleep(10000);
+}
+
+void dt_start_backthumbs_crawler(void)
+{
+  const gboolean possible =
+      // only in lighttable mode
+      dt_view_get_current() == DT_VIEW_LIGHTTABLE
+      // not in gimp mode or if using a memory database or on very simple CPUs
+      && darktable.backthumbs.capable
+      // allow on 8GB systems with default memory preferences
+      && (dt_get_available_mem() / DT_MEGA) > 3000lu;
+  if(!possible || darktable.backthumbs.state == DT_JOB_STATE_RUNNING)
+    return;
+
+  // in case it's cancelled and wants to be restarted
+  _wait_backthumbs_crawler();
+
+  dt_control_add_job(DT_JOB_QUEUE_SYSTEM_BG, _backthumbs_job_create());
+}
+
+void dt_stop_backthumbs_crawler(const gboolean wait)
+{
+  if(darktable.backthumbs.state == DT_JOB_STATE_RUNNING
+    && darktable.backthumbs.capable)
+  {
+    darktable.backthumbs.state = DT_JOB_STATE_CANCELLED;
+    if(wait)
+      _wait_backthumbs_crawler();
+  }
+}
+
+enum
 {
   DT_CACHEDIR_PREF_RETRY = 1,
   DT_CACHEDIR_PREF_CHOOSE,
   DT_CACHEDIR_PREF_DEFAULT,
   DT_CACHEDIR_PREF_QUIT
-} dt_cachedir_pref_response_t;
+};
 
-static gchar *_cachedir_in_library_rc = NULL;
+static gchar *_cachedir_found = NULL;
 
 static gchar *_find_cachedir_value(const gchar *key, const gchar *value)
 {
@@ -783,10 +819,53 @@ static gchar *_find_cachedir_value(const gchar *key, const gchar *value)
   // result without closing the file
   if(!g_strcmp0(key, "cachedir"))
   {
-    g_free(_cachedir_in_library_rc);
-    _cachedir_in_library_rc = g_strdup(value);
+    g_free(_cachedir_found);
+    _cachedir_found = g_strdup(value);
   }
   return NULL;
+}
+
+// blank after the expansion the cache folder check uses, so an empty or only
+// quoted value means the default everywhere
+static gboolean _cachedir_is_blank(const char *value)
+{
+  gchar *path = dt_loc_expand_user_path(value);
+  const gboolean blank = !path;
+  g_free(path);
+  return blank;
+}
+
+// whether filename can be read and has a cachedir line, even a blank one; the
+// cachedir table entry is set from that same read, so the answer and the value
+// always agree. dt_conf_read_values() cannot be used, it hands out the confgen
+// defaults for a file it cannot open
+static gboolean _cachedir_saved_in(const char *filename)
+{
+  gchar *value = NULL;
+  FILE *f = g_fopen(filename, "rb");
+  if(f)
+  {
+    // the line handling of dt_conf_read_values(): long lines are cut into the
+    // same pieces and the last cachedir line wins
+    char line[1024];
+    while(fgets(line, 1023, f))
+    {
+      line[strcspn(line, "\r\n")] = '\0';
+      if(g_str_has_prefix(line, "cachedir="))
+      {
+        g_free(value);
+        value = g_strdup(line + strlen("cachedir="));
+      }
+    }
+    fclose(f);
+  }
+  if(value)
+    dt_conf_set_stored_string("cachedir", value);
+  else
+    dt_conf_remove_key("cachedir");
+  const gboolean saved = value != NULL;
+  g_free(value);
+  return saved;
 }
 
 // there is no main window yet, so keep the dialog recognizable and on top
@@ -808,23 +887,30 @@ static const char *_cachedir_check_text(const dt_loc_cache_dir_check_t check)
       return _("this is not an absolute path, choose a folder instead");
     case DT_LOC_CACHE_DIR_MISSING:
       return _("if it is on an external drive, connect the drive and retry");
+    case DT_LOC_CACHE_DIR_NO_ACCESS:
+      return _("darktable cannot use this folder, check its read and write permissions and retry");
+    // the check can pass while resolving or opening the folder still fails
+    case DT_LOC_CACHE_DIR_USABLE:
     default:
       return _("the folder cannot be opened, check its permissions and retry");
   }
 }
 
-// the cache folder set in preferences is not available, typically an external
-// drive that is not connected. ask before anything uses the cache: retry,
-// choose another existing folder, use the default folder for this session or
-// quit. default_usable is FALSE when the default folder failed as well, then
-// that choice is not offered and closing the dialog quits. returns TRUE once
-// the preferred or chosen folder is in use
+// ask what to do when the preferred cache folder is not available, before
+// anything uses the cache. returns TRUE once the preferred or chosen folder is
+// in use
 static gboolean _cachedir_pref_dialog(const gboolean default_usable)
 {
   while(TRUE)
   {
     gchar *pref = g_strstrip(dt_conf_get_string("cachedir"));
     const dt_loc_cache_dir_check_t check = dt_loc_check_user_cache_dir(pref);
+    // the folder may have become available since the last attempt
+    if(check == DT_LOC_CACHE_DIR_USABLE && dt_loc_set_user_cache_dir(pref))
+    {
+      g_free(pref);
+      return TRUE;
+    }
     const gboolean can_retry = check != DT_LOC_CACHE_DIR_NOT_ABSOLUTE;
     GtkWidget *dialog = gtk_message_dialog_new(NULL, 0,
                                                GTK_MESSAGE_WARNING, GTK_BUTTONS_NONE,
@@ -866,7 +952,8 @@ static gboolean _cachedir_pref_dialog(const gboolean default_usable)
         g_object_unref(chooser);
         if(folder && dt_loc_set_user_cache_dir(folder))
         {
-          dt_conf_set_string("cachedir", folder);
+          // saved for the next start also when --conf set the failed folder
+          dt_conf_set_stored_string("cachedir", folder);
           g_free(folder);
           g_free(pref);
           return TRUE;
@@ -906,42 +993,6 @@ static gboolean _cachedir_pref_dialog(const gboolean default_usable)
         return FALSE;
     }
     g_free(pref);
-  }
-}
-
-static void _wait_backthumbs_crawler(void)
-{
-  dt_backthumb_t *bt = &darktable.backthumbs;
-  for(int i = 0; i < 1000 && bt->state == DT_JOB_STATE_CANCELLED; i++)
-    g_usleep(10000);
-}
-
-void dt_start_backthumbs_crawler(void)
-{
-  const gboolean possible =
-      // only in lighttable mode
-      dt_view_get_current() == DT_VIEW_LIGHTTABLE
-      // not in gimp mode or if using a memory database or on very simple CPUs
-      && darktable.backthumbs.capable
-      // allow on 8GB systems with default memory preferences
-      && (dt_get_available_mem() / DT_MEGA) > 3000lu;
-  if(!possible || darktable.backthumbs.state == DT_JOB_STATE_RUNNING)
-    return;
-
-  // in case it's cancelled and wants to be restarted
-  _wait_backthumbs_crawler();
-
-  dt_control_add_job(DT_JOB_QUEUE_SYSTEM_BG, _backthumbs_job_create());
-}
-
-void dt_stop_backthumbs_crawler(const gboolean wait)
-{
-  if(darktable.backthumbs.state == DT_JOB_STATE_RUNNING
-    && darktable.backthumbs.capable)
-  {
-    darktable.backthumbs.state = DT_JOB_STATE_CANCELLED;
-    if(wait)
-      _wait_backthumbs_crawler();
   }
 }
 
@@ -1792,31 +1843,45 @@ int dt_init(int argc,
   // the cachedir preference lives in darktablerc-common, so it can only be
   // applied now: before --print-paths, the directory failure dialog and the
   // first cache user. --cachedir takes precedence and a blank value means the
-  // default. an unavailable folder keeps the default for now; with a GUI the
-  // user is asked what to do once GTK is up (_cachedir_pref_dialog)
+  // default. an unavailable folder keeps the default: with a GUI the user is
+  // asked what to do once GTK is up (_cachedir_pref_dialog), without one it is
+  // only logged
   gboolean cachedir_pref_failed = FALSE;
+  // a cachedir line in darktablerc-common, even a blank one, is a saved
+  // choice. a missing or unreadable file only gets the defaults inserted
+  const gboolean cachedir_saved = _cachedir_saved_in(darktablerc_common);
   gchar *cachedir_pref = g_strstrip(dt_conf_get_string("cachedir"));
-  if(!cachedir_pref[0])
+  // the workspace chooser runs further down, unless darktable exits for
+  // --print-paths first or runs for gimp (dt_workspace_create())
+  const gboolean workspace_may_change =
+    init_gui && !print_paths && !print_paths_as_flags
+    && !dt_check_gimpmode("file") && !dt_check_gimpmode("thumb")
+    && dt_conf_get_bool("database/multiple_workspace");
+  if(!cachedir_saved && !dt_conf_is_overridden("cachedir") && !workspace_may_change)
   {
     // a darktable without this preference saves the unknown key to
     // darktablerc instead of darktablerc-common, and darktablerc is only read
-    // further down, so look for it there as well
+    // further down, so look for it there when darktablerc-common has no
+    // cachedir line. a blank value saved there or given with --conf means the
+    // default and is not replaced. when the workspace chooser can still pick
+    // another darktablerc-<label>, the reload below keeps the line of the
+    // chosen workspace instead, used from the next start
     const char *label = dt_conf_get_string_const("workspace/label");
     char darktablerc[PATH_MAX] = { 0 };
     snprintf(darktablerc, sizeof(darktablerc), "%s/darktablerc%s%s",
              datadir, label[0] ? "-" : "", label);
     g_free(dt_conf_read_values(darktablerc, _find_cachedir_value));
-    if(_cachedir_in_library_rc && g_strstrip(_cachedir_in_library_rc)[0])
+    if(_cachedir_found && !_cachedir_is_blank(g_strstrip(_cachedir_found)))
     {
       g_free(cachedir_pref);
-      cachedir_pref = _cachedir_in_library_rc;
-      dt_conf_set_string("cachedir", cachedir_pref);
+      cachedir_pref = _cachedir_found;
+      dt_conf_set_stored_string("cachedir", cachedir_pref);
     }
     else
-      g_free(_cachedir_in_library_rc);
-    _cachedir_in_library_rc = NULL;
+      g_free(_cachedir_found);
+    _cachedir_found = NULL;
   }
-  if(!cachedir_from_command && cachedir_pref[0])
+  if(!cachedir_from_command && !_cachedir_is_blank(cachedir_pref))
   {
     if(dt_loc_set_user_cache_dir(cachedir_pref))
     {
@@ -1889,17 +1954,14 @@ int dt_init(int argc,
     darktable.themes = NULL;
     dt_gui_theme_init(darktable.gui);
 
-    if(cachedir_pref_failed)
+    // a failing config or tmp dir is fatal below anyway, so don't ask about
+    // the cache first
+    if(cachedir_pref_failed
+       && (!user_dir_failed || user_dir_failed == CACHEDIR_CREATION_FAILED))
     {
-      // the user answers here, so no toast about it later. a failing config
-      // or tmp dir is fatal below anyway, so don't ask about the cache first
-      cachedir_pref_failed = FALSE;
-      if(!user_dir_failed || user_dir_failed == CACHEDIR_CREATION_FAILED)
-      {
-        const gboolean default_usable = user_dir_failed != CACHEDIR_CREATION_FAILED;
-        if(_cachedir_pref_dialog(default_usable))
-          user_dir_failed = 0;
-      }
+      const gboolean default_usable = user_dir_failed != CACHEDIR_CREATION_FAILED;
+      if(_cachedir_pref_dialog(default_usable))
+        user_dir_failed = 0;
     }
 
     if(user_dir_failed)
@@ -1953,7 +2015,19 @@ int dt_init(int argc,
            default_dbname ? "" : "-",
            default_dbname ? "" : dblabel);
 
+  // a folder chosen in the cache folder dialog is only in memory, and an older
+  // darktable may have left another cachedir in darktablerc. keep the stored
+  // value, which --conf hides but does not protect from the reload. a blank
+  // one only counts when it was saved: a missing or unreadable
+  // darktablerc-common gets the default inserted, which must not drop a
+  // legacy darktablerc line
+  gchar *cachedir_stored = dt_conf_get_stored_string("cachedir");
+
   dt_conf_init(darktable.conf, darktablerc, FALSE, config_override);
+
+  if(cachedir_stored && (cachedir_saved || !_cachedir_is_blank(cachedir_stored)))
+    dt_conf_set_stored_string("cachedir", cachedir_stored);
+  g_free(cachedir_stored);
 
   g_slist_free_full(config_override, g_free);
 
@@ -2055,11 +2129,6 @@ int dt_init(int argc,
   darktable.signals = dt_control_signal_init();
 
   dt_control_init(init_gui);
-
-  if(cachedir_pref_failed)
-    dt_control_log(_("cache folder from preferences is not usable, using %s"),
-                   darktable.cachedir);
-
   if(init_gui)
   {
     darktable.undo = dt_undo_init();

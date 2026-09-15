@@ -112,6 +112,8 @@ void dt_conf_init(dt_conf_t *cf,
 void dt_conf_cleanup(dt_conf_t *cf);
 gboolean dt_conf_key_exists(const char *key);
 gboolean dt_conf_is_overridden(const char *key);
+gchar *dt_conf_get_stored_string(const char *key);
+void dt_conf_set_stored_string(const char *key, const char *value);
 void dt_conf_remove_key(const char *key);
 gboolean dt_conf_key_not_empty(const char *key);
 GSList *dt_conf_all_string_entries(const char *dir);
