@@ -1496,7 +1496,6 @@ static gboolean _dev_load_requested_image(gpointer user_data)
     dt_mipmap_cache_remove(old_imgid);
     dt_image_update_final_size(old_imgid);
     dt_image_synch_xmp(old_imgid);
-    dt_history_hash_set_mipmap(old_imgid);
 #ifdef USE_LUA
     dt_lua_async_call_alien(dt_lua_event_trigger_wrapper,
         0, NULL, NULL,
@@ -1506,6 +1505,7 @@ static gboolean _dev_load_requested_image(gpointer user_data)
 #endif
     // update the lighttable metadata_view with any changes
     DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_METADATA_CHANGED);
+    dt_history_hash_set_mipmap(old_imgid);
   }
 
   // clean the undo list
@@ -4317,7 +4317,6 @@ void leave(dt_view_t *self)
     dt_mipmap_cache_remove(imgid);
     dt_image_update_final_size(imgid);
     dt_image_synch_xmp(imgid);
-    dt_history_hash_set_mipmap(imgid);
 #ifdef USE_LUA
     dt_lua_async_call_alien(dt_lua_event_trigger_wrapper,
         0, NULL, NULL,
@@ -4327,6 +4326,7 @@ void leave(dt_view_t *self)
 #endif
     // update the lighttable metadata_view with any changes
     DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_METADATA_CHANGED);
+    dt_history_hash_set_mipmap(imgid);
   }
   else
     dt_image_synch_xmp(imgid);
